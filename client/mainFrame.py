@@ -1,11 +1,10 @@
+import tkinter as tk
 from tkinter import *
 from tkinter.filedialog import askopenfilename
 
-from server import SocketHandler
-from views.dialog import Dialog
-
+from client.socketHandler import SocketHandler
+from client.views.dialog import Dialog
 from config import *
-import tkinter as tk
 
 
 class MainFrame(tk.Frame):
@@ -14,24 +13,12 @@ class MainFrame(tk.Frame):
 
         if not localMode:
             self.address = Dialog(self, "Type your address").show()
-            self.connectAddress = Dialog(self, "Type connect address").show()
             self.port = Dialog(self, "Type your port").show()
-            self.connectPort = Dialog(self, "Type connect port").show()
             self.password = Dialog(self, "Type password").show()
         else:
-            self.nr = Dialog(self, "1 or 2").show()
-            self.port = 8080
-            self.connectPort = 8081
-            if self.nr == "2":
-                self.port = 8081
-                self.connectPort = 8080
-            self.address = "localhost"
-            self.connectAddress = "localhost"
-            self.port = 8080
-            self.connectPort = 8081
-            self.password = "123"
-
-        self.socketHandler = SocketHandler(self.port, self.address)
+            self.port = localPort
+            self.address = localHost
+            self.password = localPassword
 
         parent.configure(background="black")
         parent.configure(bg='black')
@@ -41,8 +28,9 @@ class MainFrame(tk.Frame):
                              padx=10,
                              pady=10
                              )
+        parent.bind('<Return>', self.sendMessage)
 
-        self.Output = Text(parent, height=8,
+        self.output = Text(parent, height=8,
                            width=200,
                            bg="light cyan",
                            padx=10,
@@ -51,10 +39,12 @@ class MainFrame(tk.Frame):
         self.fileButton = Button(parent, height=2,
                                  width=20,
                                  text="File",
-                                 command=lambda: self.Take_input(),
+                                 command=lambda: self.sendFile,
                                  background="black",
                                  fg="white"
                                  )
+
+        self.socketHandler = SocketHandler(self.port, self.address, self.output)
 
         self.messAlgDesc = Label(parent, text="Text algorithm:", background="black", fg="white")
         algvariable = StringVar(self)
@@ -73,10 +63,15 @@ class MainFrame(tk.Frame):
         self.messAlgChooser.grid(row=1, column=0, sticky="ne")
         self.fileAlgDesc.grid(row=1, column=0, sticky="sw")
         self.fileAlgChooser.grid(row=1, column=0, sticky="se")
-        self.Output.grid(row=1, column=1)
+        self.output.grid(row=1, column=1)
         self.inputtxt.grid(row=3, column=1)
 
         mainloop()
 
-    def Take_input(self):
+    def sendFile(self):
         filename = askopenfilename()
+        self.socketHandler.sendFile(filename)
+
+    def sendMessage(self, event=None):
+        msg = self.inputtxt.get("1.0", 'end-1c')
+        self.socketHandler.sendMessage(msg)
