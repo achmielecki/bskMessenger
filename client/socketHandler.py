@@ -2,9 +2,10 @@ import socket
 import threading
 import logging
 import pickle
+import time
 from tkinter import END
 
-from message.message import Message, MessageTypes
+from message.message import Message, MessageType
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -36,6 +37,7 @@ class SocketHandler:
                     continue
                 log.info('Connected to socket')
                 self.isConnectionActive = True
+            time.sleep(5)
 
     def receive(self):
         while True:
@@ -44,16 +46,20 @@ class SocketHandler:
                     msg = self.socket.recv(1024)
                     log.info('Received message')
                     msg = pickle.loads(msg)
-                    self.output.insert(END, "\n"+msg.content)
+                    self.handleMessage(msg)
                 except Exception as e:
                     log.info(f'Error receiving message {e}')
+
+    def handleMessage(self, message):
+        if message.type == MessageType.TEXT:
+            self.output.insert(END, f"\n [{message.sender[0]}:{message.sender[1]}] {message.content}")
 
     def sendMessage(self, content):
         log.info('TypedEnter')
         if self.isConnectionActive:
             log.info('Sending text message')
             try:
-                msg = Message(MessageTypes.TEXT, content)
+                msg = Message(self.socket.getsockname(), MessageType.TEXT, content)
                 self.socket.sendall(pickle.dumps(msg))
             except ConnectionResetError as e:
                 self.isConnectionActive = False

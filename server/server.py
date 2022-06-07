@@ -3,7 +3,7 @@ import threading
 import logging
 import pickle
 
-from message.message import Message, MessageTypes
+from message.message import Message, MessageType
 from server.connection import Connection
 
 log = logging.getLogger(__name__)
