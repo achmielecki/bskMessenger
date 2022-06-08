@@ -11,6 +11,7 @@ log.setLevel(logging.INFO)
 
 
 class Server:
+    HEADER_LENGTH = 1024
 
     def __init__(self, port: int, address: str):
         self.port = int(port)
@@ -36,13 +37,20 @@ class Server:
         self.connections[address] = Connection(address, connection)
         while isConnectionActive:
             try:
-                msg = connection.recv(1024)
+                msg = self.getNextMessage(connection)
                 if msg:
                     self.handleMessage(msg, address, connection)
             except Exception as e:
                 isConnectionActive = False
                 log.info(f'Disconnected {address} {e}')
                 self.connections[address] = None
+
+    def getNextMessage(self, connection):
+        log.info('Received message')
+        msg = connection.recv(1024)
+        msgLength = int(msg.decode('utf-8'))
+        msg = connection.recv(msgLength)
+        return msg
 
     def handleMessage(self, msg: Message, address: str, connection: socket):
         log.info(f'Message from {address}')
@@ -51,4 +59,14 @@ class Server:
     def sendFrom(self, connection, address, msg):
         for client in self.connections.values():
             if not client.address == address:
-                client.connection.sendall(msg)
+                self.sendMessage(msg, client.connection)
+
+    def nextMessageSize(self, msg):
+        bytes = str(len(msg)).encode("utf-8")
+        bytes = bytes + b' ' * (self.HEADER_LENGTH - len(bytes))
+        return bytes
+
+    def sendMessage(self, message, client):
+        log.info(f'sending message: {len(message)} bytes')
+        client.sendall(self.nextMessageSize(message))
+        client.sendall(message)

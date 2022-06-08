@@ -39,7 +39,7 @@ class MainFrame(tk.Frame):
         self.fileButton = Button(parent, height=2,
                                  width=20,
                                  text="File",
-                                 command=lambda: self.sendFile,
+                                 command=lambda: self.sendFile(),
                                  background="black",
                                  fg="white"
                                  )
@@ -74,4 +74,5 @@ class MainFrame(tk.Frame):
 
     def sendMessage(self, event=None):
         msg = self.inputtxt.get("1.0", 'end-1c')
-        self.socketHandler.sendMessage(msg)
+        self.socketHandler.sendTextMessage(msg)
+        self.output.insert(END, f"\n [{self.socketHandler.socket.getsockname()[0]}:{self.socketHandler.socket.getsockname()[1]}] {msg}")
