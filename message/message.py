@@ -2,8 +2,10 @@ from enum import Enum
 
 
 class MessageType(Enum):
-    TEXT = 'TEXT'
-    FILE = 'FILE'
+    TEXT = 1
+    FILE = 2
+    SESSION = 3
+    KEY = 4
 
 
 class Message:
