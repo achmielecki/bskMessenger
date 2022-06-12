@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import serialization as crypto_serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend as crypto_default_backend
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
@@ -120,7 +120,12 @@ class SocketHandler:
             self.saveSessionKey(message)
 
     def receiveTextMessage(self, message):
-        decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender])
+        mode = modes.CBC
+        decryptedContent = ""
+        if message.encryption == "CBC":
+            decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender])
+        elif message.encryption == "ECB":
+            decryptedContent = self.decryptTextECB(message.content, self.sessionKeys[message.sender])
         self.output.insert(END, f"\n [{message.sender[0]}:{message.sender[1]}] {decryptedContent}")
 
     def saveKeyAndSend(self, message):
@@ -147,13 +152,18 @@ class SocketHandler:
             file.write(b''.join(messages))
         log.info(f"Wrote {len(messages)} parts")
 
-    def sendTextMessage(self, content, receiver, encryption):
+    def sendTextMessage(self, content, receiver, encryptionMode):
         log.info('TypedEnter')
         if self.isConnectionActive:
             log.info('Sending text message')
-            encryptedContent = self.encryptTextCBC(content, self.sessionKeys[self.findSessionKey(receiver)])
+            mode = modes.CBC
+            encryptedContent = ""
+            if(encryptionMode == "CBC"):
+                encryptedContent = self.encryptTextCBC(content, self.sessionKeys[self.findSessionKey(receiver)])
+            elif encryptionMode == "ECB":
+                encryptedContent = self.encryptTextECB(content, self.sessionKeys[self.findSessionKey(receiver)])
             try:
-                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver)
+                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver, encryption=encryptionMode)
                 self.sendMessage(msg)
             except ConnectionResetError as e:
                 self.isConnectionActive = False
@@ -224,15 +234,29 @@ class SocketHandler:
         ciphertext = encryptor.update(padded_data) + encryptor.finalize()
         return ciphertext
 
-    def decryptTextCBC(selfself, ciphertext, sessionkey):
+    def decryptTextCBC(self, ciphertext, sessionkey):
         key = sessionkey
-        unpadder = padding.PKCS7(16).unpadder()
-        data = unpadder.update(ciphertext)
-        ciphertext = data + unpadder.finalize()
         cipher = Cipher(algorithms.AES(key), modes.CBC(ciphertext[:16]))
         decryptor = cipher.decryptor()
         plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        plaintext = (plaintext[17:]).decode("utf-8")
+        plaintext = self.unpad((plaintext[16:]).decode("utf-8"))
+        return plaintext
+
+    def encryptTextECB(self, plaintext, sessionkey):
+        key = sessionkey
+        cipher = Cipher(algorithms.AES(key), modes.ECB())
+        encryptor = cipher.encryptor()
+        padded_data = self.pad(plaintext.encode("utf-8"), 16)
+        log.info(plaintext.encode("utf-8"))
+        ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+        return ciphertext
+
+    def decryptTextECB(self, ciphertext, sessionkey):
+        key = sessionkey
+        cipher = Cipher(algorithms.AES(key), modes.ECB())
+        decryptor = cipher.decryptor()
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        plaintext = self.unpad((plaintext).decode("utf-8"))
         return plaintext
 
     def findSessionKey(self, receiverStr):
@@ -250,4 +274,5 @@ class SocketHandler:
         log.info(str)
         return str
 
-    #def unpad(selfself, str, mul):
+    def unpad(self, str):
+        return str.split("\n")[0]
