@@ -9,6 +9,7 @@ import math
 import base64
 from tkinter import END
 from config import *
+from client.views.progressFrame import Progressframe
 
 from message.message import Message, MessageType
 from cryptography.hazmat.primitives import serialization as crypto_serialization
@@ -120,13 +121,13 @@ class SocketHandler:
             self.saveSessionKey(message)
 
     def receiveTextMessage(self, message):
-        mode = modes.CBC
         decryptedContent = ""
         if message.encryption == "CBC":
-            decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender])
+            decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender], paddedBytes=message.padded)
         elif message.encryption == "ECB":
-            decryptedContent = self.decryptTextECB(message.content, self.sessionKeys[message.sender])
+            decryptedContent = self.decryptTextECB(message.content, self.sessionKeys[message.sender], paddedBytes=message.padded)
         self.output.insert(END, f"\n [{message.sender[0]}:{message.sender[1]}] {decryptedContent}")
+        self.output.see('end')
 
     def saveKeyAndSend(self, message):
         if message.sender not in self.publicKeys:
@@ -143,45 +144,63 @@ class SocketHandler:
         self.sessionKeys[message.sender] = message.content.encode("latin-1")
 
     def saveToFile(self, message):
-        messages = [message.content]
+        messages = []
+        lastPart = None
+        msg = message
         while len(messages) != message.parts:
-            msg = self.getNextMessage()
+            if msg.encryption is "OFB":
+                decryptedMsg, lastPart = self.decryptPartOFB(msg.content, lastPart, self.sessionKeys[message.sender], message.padded)
+            else:
+                decryptedMsg, lastPart = self.decryptPartCBC(msg.content, lastPart, self.sessionKeys[message.sender], message.padded)
             log.info(f"Received {1 + msg.part} of {msg.parts}")
-            messages.append(msg.content)
-        with open(f'downloaded{message.fileExtension}', "w+b") as file:
+            log.info(f"Received message {decryptedMsg}")
+            messages.append(decryptedMsg)
+            if len(messages) != message.parts:
+                msg = self.getNextMessage()
+        with open(f'downloaded.txt', "w+b") as file:
             file.write(b''.join(messages))
+        os.rename('downloaded.txt', f'downloaded{message.fileExtension}')
         log.info(f"Wrote {len(messages)} parts")
 
     def sendTextMessage(self, content, receiver, encryptionMode):
         log.info('TypedEnter')
         if self.isConnectionActive:
             log.info('Sending text message')
-            mode = modes.CBC
             encryptedContent = ""
+            paddedBytes = 0
             if(encryptionMode == "CBC"):
-                encryptedContent = self.encryptTextCBC(content, self.sessionKeys[self.findSessionKey(receiver)])
+                encryptedContent, paddedBytes = self.encryptTextCBC(content, self.sessionKeys[self.findSessionKey(receiver)])
             elif encryptionMode == "ECB":
-                encryptedContent = self.encryptTextECB(content, self.sessionKeys[self.findSessionKey(receiver)])
+                encryptedContent, paddedBytes = self.encryptTextECB(content, self.sessionKeys[self.findSessionKey(receiver)])
             try:
-                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver, encryption=encryptionMode)
+                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver, encryption=encryptionMode, padded=paddedBytes)
                 self.sendMessage(msg)
             except ConnectionResetError as e:
                 self.isConnectionActive = False
 
-    def sendFile(self, filename):
+    def sendFile(self, filename, receiver, encryptionMode):
         max = 1024 * 50
         log.info('FileChosen')
+        progress = Progressframe()
         if self.isConnectionActive:
             log.info('Sending file')
             fExtension = os.path.splitext(filename)[1]
             parts = math.ceil(os.path.getsize(filename) / max)
+            lastPart = None
             with open(filename, 'r+b') as source:
                 part = 0
                 while True:
-                    msg = Message(self.socket.getsockname(), MessageType.FILE, None, None, part, parts, fExtension)
+                    msg = Message(self.socket.getsockname(), MessageType.FILE, None, receiver, None, part, parts, fExtension)
                     data = source.read(max)
-                    msg.content = data
+                    if encryptionMode is "OFB":
+                        encryptedMsg, lastPart, paddedBytes = self.encryptPartOFB(data, lastPart, self.sessionKeys[self.findSessionKey(receiver)])
+                    else:
+                        encryptedMsg, lastPart, paddedBytes = self.encryptPartCBC(data, lastPart, self.sessionKeys[self.findSessionKey(receiver)])
+                    msg.content = encryptedMsg
+                    msg.padded = paddedBytes
+                    msg.encryption = encryptionMode
                     self.sendMessage(msg)
+                    progress.updateValue(1 + part, parts)
                     log.info(f'Sent part {1 + part} of {parts}')
                     part += 1
                     if part == parts:
@@ -224,40 +243,116 @@ class SocketHandler:
         plaintext = fernet.decrypt(ciphertext)
         return plaintext
 
-    def encryptTextCBC(self, plaintext, sessionkey):
+    def encryptTextCBC(self, plaintext, sessionkey, lastBlock=None):
         key = sessionkey
-        iv = os.urandom(16)
+        if lastBlock is not None:
+            iv = lastBlock
+        else:
+            iv = os.urandom(16)
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+        log.info(f"before encrypting sent {iv}")
+        if lastBlock is not None:
+            iv = b''
         encryptor = cipher.encryptor()
-        padded_data = self.pad(iv + plaintext.encode("utf-8"), 16)
-        log.info(iv + plaintext.encode("utf-8"))
+        if type(plaintext) is bytes:
+            text = plaintext
+        else:
+            text = plaintext.encode("utf-8")
+        padded_data, paddedBytes = self.pad(text, 16)
         ciphertext = encryptor.update(padded_data) + encryptor.finalize()
-        return ciphertext
+        ciphertext = iv + ciphertext
+        return ciphertext, paddedBytes
 
-    def decryptTextCBC(self, ciphertext, sessionkey):
+    def decryptTextCBC(self, ciphertext, sessionkey, lastBlock=None, encoded=True, paddedBytes=0):
         key = sessionkey
-        cipher = Cipher(algorithms.AES(key), modes.CBC(ciphertext[:16]))
+        if lastBlock is not None:
+            iv = lastBlock
+        else:
+            iv = ciphertext[:16]
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
         decryptor = cipher.decryptor()
         plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        plaintext = self.unpad((plaintext[16:]).decode("utf-8"))
+        if lastBlock is None:
+            plaintext = plaintext[16:]
+        if encoded:
+            plaintext = plaintext.decode("utf-8")
+        plaintext = self.unpad(plaintext, paddedBytes)
+        log.info(f"decrypted {iv}")
         return plaintext
 
     def encryptTextECB(self, plaintext, sessionkey):
         key = sessionkey
         cipher = Cipher(algorithms.AES(key), modes.ECB())
         encryptor = cipher.encryptor()
-        padded_data = self.pad(plaintext.encode("utf-8"), 16)
+        padded_data, paddedBytes = self.pad(plaintext.encode("utf-8"), 16)
         log.info(plaintext.encode("utf-8"))
         ciphertext = encryptor.update(padded_data) + encryptor.finalize()
-        return ciphertext
+        return ciphertext, paddedBytes
 
-    def decryptTextECB(self, ciphertext, sessionkey):
+    def decryptTextECB(self, ciphertext, sessionkey, paddedBytes=0):
         key = sessionkey
         cipher = Cipher(algorithms.AES(key), modes.ECB())
         decryptor = cipher.decryptor()
         plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        plaintext = self.unpad((plaintext).decode("utf-8"))
+        plaintext = self.unpad(plaintext.decode("utf-8"), paddedBytes)
         return plaintext
+
+    def encryptTextOFB(self, plaintext, sessionkey, lastBlock=None):
+        key = sessionkey
+        if lastBlock is not None:
+            iv = lastBlock
+        else:
+            iv = os.urandom(16)
+        cipher = Cipher(algorithms.AES(key), modes.OFB(iv))
+        log.info(f"before encrypting sent {iv}")
+        if lastBlock is not None:
+            iv = b''
+        encryptor = cipher.encryptor()
+        if type(plaintext) is bytes:
+            text = plaintext
+        else:
+            text = plaintext.encode("utf-8")
+        padded_data, paddedBytes = self.pad(text, 16)
+        ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+        ciphertext = iv + ciphertext
+        return ciphertext, paddedBytes
+
+    def decryptTextOFB(self, ciphertext, sessionkey, lastBlock=None, encoded=True, paddedBytes=0):
+        key = sessionkey
+        if lastBlock is not None:
+            iv = lastBlock
+        else:
+            iv = ciphertext[:16]
+        cipher = Cipher(algorithms.AES(key), modes.OFB(iv))
+        decryptor = cipher.decryptor()
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        if lastBlock is None:
+            plaintext = plaintext[16:]
+        if encoded:
+            plaintext = plaintext.decode("utf-8")
+            plaintext = self.unpad(plaintext, paddedBytes)
+        log.info(f"decrypted {iv}")
+        return plaintext
+
+    def encryptPartCBC(self, part, lastPart, sessionkey):
+        encryptedPart, paddedBytes = self.encryptTextCBC(part, sessionkey, lastPart)
+        lastPart = encryptedPart[-16:]
+        return encryptedPart, lastPart, paddedBytes
+
+    def decryptPartCBC(self, encryptedPart, lastPart, sessionkey, paddedBytes):
+        lastBlock = encryptedPart[-16:]
+        decryptedPart = self.decryptTextCBC(encryptedPart, sessionkey, lastPart, False, paddedBytes)
+        return decryptedPart, lastBlock
+
+    def encryptPartOFB(self, part, lastPart, sessionkey):
+        encryptedPart, paddedBytes = self.encryptTextOFB(part, sessionkey, lastPart)
+        lastPart = encryptedPart[-16:]
+        return encryptedPart, lastPart, paddedBytes
+
+    def decryptPartOFB(self, encryptedPart, lastPart, sessionkey, paddedBytes):
+        lastBlock = encryptedPart[-16:]
+        decryptedPart = self.decryptTextOFB(encryptedPart, sessionkey, lastPart, False, paddedBytes)
+        return decryptedPart, lastBlock
 
     def findSessionKey(self, receiverStr):
         for e in self.otherClients:
@@ -269,10 +364,8 @@ class SocketHandler:
         currLen = len(str)
         neededBytes = (int(currLen / mul) + 1) * mul - currLen
         for i in range(neededBytes):
-            str += b"1"
-        log.info(neededBytes)
-        log.info(str)
-        return str
+            str += b'1'
+        return str, neededBytes
 
-    def unpad(self, str):
-        return str.split("\n")[0]
+    def unpad(self, str, paddedBytes):
+        return str[:-paddedBytes]

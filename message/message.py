@@ -14,7 +14,7 @@ class MessageEncryption(Enum):
 
 
 class Message:
-    def __init__(self, sender, type, content=None, receiver=None, encryption=None, part=None, parts=None, fExtension=None):
+    def __init__(self, sender, type, content=None, receiver=None, encryption=None, part=None, parts=None, fExtension=None, padded=0):
         self.sender = sender
         self.receiver = receiver
         self.content = content
@@ -23,3 +23,4 @@ class Message:
         self.part = part
         self.parts = parts
         self.fileExtension = fExtension
+        self.padded = padded
