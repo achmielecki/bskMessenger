@@ -56,14 +56,14 @@ class MainFrame(tk.Frame):
 
         self.messAlgDesc = Label(parent, text="Text algorithm:", background="black", fg="white")
         self.algvariable = StringVar(self)
-        self.algvariable.set("ECB")
-        self.messAlgChooser = OptionMenu(parent, self.algvariable, "ECB", "CBC")
+        self.algvariable.set("CBC")
+        self.messAlgChooser = OptionMenu(parent, self.algvariable, "CBC", "ECB")
         self.messAlgChooser.config(bg="black", fg="white")
 
         self.fileAlgDesc = Label(text="File algorithm:", background="black", fg="white")
         self.filevariable = StringVar(self)
-        self.filevariable.set("OFB")
-        self.fileAlgChooser = OptionMenu(parent, self.filevariable, "OFB", "CBC")
+        self.filevariable.set("CBC")
+        self.fileAlgChooser = OptionMenu(parent, self.filevariable, "CBC", "OFB")
         self.fileAlgChooser.config(bg="black", fg="white")
 
         self.fileButton.grid(row=2, column=0)
@@ -80,14 +80,18 @@ class MainFrame(tk.Frame):
 
     def sendFile(self):
         filename = askopenfilename()
-        self.socketHandler.sendFile(filename)
+        receiver = self.othersListVar.get()
+        encryption = self.filevariable.get()
+        self.socketHandler.sendFile(filename, receiver, encryption)
 
     def sendMessage(self, event=None):
         msg = self.inputtxt.get("1.0", 'end-1c')
+        self.inputtxt.delete("1.0", 'end')
         receiver = self.othersListVar.get()
         encryption = self.algvariable.get()
         self.socketHandler.sendTextMessage(msg, receiver, encryption)
         self.output.insert(END, f"\n [{self.socketHandler.socket.getsockname()[0]}:{self.socketHandler.socket.getsockname()[1]}] {msg}")
+        self.output.see('end')
 
     def refreshOthersList(self):
         menu = self.othersListOption["menu"]
