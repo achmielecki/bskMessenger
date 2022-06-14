@@ -1,26 +1,25 @@
+import base64
+import logging
+import math
 import os.path
+import pickle
 import socket
 import sys
 import threading
-import logging
-import pickle
 import time
-import math
-import base64
-from tkinter import END
-from config import *
-from client.views.progressFrame import Progressframe
-
-from message.message import Message, MessageType
+from cryptography.fernet import Fernet
+from cryptography.hazmat.backends import default_backend as crypto_default_backend
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization as crypto_serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.backends import default_backend as crypto_default_backend
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from tkinter import END
 
-
+from client.views.info import Info
+from client.views.progressFrame import Progressframe
+from config import *
+from message.message import Message, MessageType
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -29,7 +28,8 @@ log.setLevel(logging.INFO)
 class SocketHandler:
     HEADER_LENGTH = 1024
 
-    def __init__(self, port: int, address: str, output):
+    def __init__(self, port: int, address: str, output, parentFrame):
+        self.parentFrame = parentFrame
         self.port = int(port)
         self.address = address
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -112,7 +112,7 @@ class SocketHandler:
                     log.info(f'Error receiving message {e}')
 
     def getNextMessage(self):
-        #log.info('Received message')
+        # log.info('Received message')
         msg = self.socket.recv(1024)
         msgLength = int(msg.decode('utf-8'))
         msg = self.socket.recv(msgLength)
@@ -133,9 +133,11 @@ class SocketHandler:
     def receiveTextMessage(self, message):
         decryptedContent = ""
         if message.encryption == "CBC":
-            decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender], paddedBytes=message.padded)
+            decryptedContent = self.decryptTextCBC(message.content, self.sessionKeys[message.sender],
+                                                   paddedBytes=message.padded)
         elif message.encryption == "ECB":
-            decryptedContent = self.decryptTextECB(message.content, self.sessionKeys[message.sender], paddedBytes=message.padded)
+            decryptedContent = self.decryptTextECB(message.content, self.sessionKeys[message.sender],
+                                                   paddedBytes=message.padded)
         self.output.insert(END, f"\n [{message.sender[0]}:{message.sender[1]}] {decryptedContent}")
         self.output.see('end')
 
@@ -143,11 +145,13 @@ class SocketHandler:
         if message.sender not in self.publicKeys:
             self.otherClients.append(message.sender)
             self.publicKeys[message.sender] = message.content.encode("utf-8")
-            msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.decode("utf-8"), message.sender)
+            msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.decode("utf-8"),
+                          message.sender)
             self.sendMessage(msg)
         else:
             self.sessionKeys[message.sender] = os.urandom(16)
-            msg = Message(self.socket.getsockname(), MessageType.KEY, self.sessionKeys[message.sender].decode("latin-1"), message.sender)
+            msg = Message(self.socket.getsockname(), MessageType.KEY,
+                          self.sessionKeys[message.sender].decode("latin-1"), message.sender)
             self.sendMessage(msg)
 
     def saveSessionKey(self, message):
@@ -157,13 +161,17 @@ class SocketHandler:
         messages = []
         lastPart = None
         msg = message
+        infoFrameThread = threading.Thread(target=Info(self.parentFrame, "File is being sent to you").show)
+        infoFrameThread.start()
         while len(messages) != message.parts:
             if msg.encryption is "OFB":
-                decryptedMsg, lastPart = self.decryptPartOFB(msg.content, lastPart, self.sessionKeys[message.sender], message.padded)
+                decryptedMsg, lastPart = self.decryptPartOFB(msg.content, lastPart, self.sessionKeys[message.sender],
+                                                             message.padded)
             else:
-                decryptedMsg, lastPart = self.decryptPartCBC(msg.content, lastPart, self.sessionKeys[message.sender], message.padded)
+                decryptedMsg, lastPart = self.decryptPartCBC(msg.content, lastPart, self.sessionKeys[message.sender],
+                                                             message.padded)
             log.info(f"Received {1 + msg.part} of {msg.parts}")
-            log.info(f"Received message {decryptedMsg}")
+            log.info(f"Received message")
             messages.append(decryptedMsg)
             if len(messages) != message.parts:
                 msg = self.getNextMessage()
@@ -178,12 +186,15 @@ class SocketHandler:
             log.info('Sending text message')
             encryptedContent = ""
             paddedBytes = 0
-            if(encryptionMode == "CBC"):
-                encryptedContent, paddedBytes = self.encryptTextCBC(content, self.sessionKeys[self.findSessionKey(receiver)])
+            if (encryptionMode == "CBC"):
+                encryptedContent, paddedBytes = self.encryptTextCBC(content,
+                                                                    self.sessionKeys[self.findSessionKey(receiver)])
             elif encryptionMode == "ECB":
-                encryptedContent, paddedBytes = self.encryptTextECB(content, self.sessionKeys[self.findSessionKey(receiver)])
+                encryptedContent, paddedBytes = self.encryptTextECB(content,
+                                                                    self.sessionKeys[self.findSessionKey(receiver)])
             try:
-                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver, encryption=encryptionMode, padded=paddedBytes)
+                msg = Message(self.socket.getsockname(), MessageType.TEXT, encryptedContent, receiver,
+                              encryption=encryptionMode, padded=paddedBytes)
                 self.sendMessage(msg)
             except ConnectionResetError as e:
                 self.isConnectionActive = False
@@ -200,12 +211,15 @@ class SocketHandler:
             with open(filename, 'r+b') as source:
                 part = 0
                 while True:
-                    msg = Message(self.socket.getsockname(), MessageType.FILE, None, receiver, None, part, parts, fExtension)
+                    msg = Message(self.socket.getsockname(), MessageType.FILE, None, receiver, None, part, parts,
+                                  fExtension)
                     data = source.read(max)
                     if encryptionMode is "OFB":
-                        encryptedMsg, lastPart, paddedBytes = self.encryptPartOFB(data, lastPart, self.sessionKeys[self.findSessionKey(receiver)])
+                        encryptedMsg, lastPart, paddedBytes = self.encryptPartOFB(data, lastPart, self.sessionKeys[
+                            self.findSessionKey(receiver)])
                     else:
-                        encryptedMsg, lastPart, paddedBytes = self.encryptPartCBC(data, lastPart, self.sessionKeys[self.findSessionKey(receiver)])
+                        encryptedMsg, lastPart, paddedBytes = self.encryptPartCBC(data, lastPart, self.sessionKeys[
+                            self.findSessionKey(receiver)])
                     msg.content = encryptedMsg
                     msg.padded = paddedBytes
                     msg.encryption = encryptionMode

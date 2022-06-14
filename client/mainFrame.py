@@ -46,7 +46,7 @@ class MainFrame(tk.Frame):
                                  fg="white"
                                  )
 
-        self.socketHandler = SocketHandler(self.port, self.address, self.output)
+        self.socketHandler = SocketHandler(self.port, self.address, self.output, self)
 
         self.othersListVar = StringVar(self)
         self.othersListVar.set(self.socketHandler.otherClients)
