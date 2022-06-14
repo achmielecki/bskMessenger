@@ -7,6 +7,17 @@ import socket
 import sys
 import threading
 import time
+import math
+import base64
+from tkinter import END
+from config import *
+from client.views.progressFrame import Progressframe
+
+from message.message import Message, MessageType
+from cryptography.hazmat.primitives import serialization as crypto_serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend as crypto_default_backend
 from cryptography.hazmat.primitives import hashes
@@ -61,19 +72,29 @@ class SocketHandler:
             )
 
             self.publicKey = self.key.public_key().public_bytes(
-                crypto_serialization.Encoding.OpenSSH,
-                crypto_serialization.PublicFormat.OpenSSH
+                crypto_serialization.Encoding.PEM,
+                crypto_serialization.PublicFormat.PKCS1
             )
 
             privateKeyFile.write(self.encryptRsaKey(self.privateKey, localPassword))
-            self.privateKey = self.paddedText
+            self.privateKey = serialization.load_pem_private_key(
+                    self.cutRsaPad(self.paddedText, " PRIVATE KEY-----"),
+                    password=None,
+                )
             publicKeyFile.write(self.encryptRsaKey(self.publicKey, localPassword))
-            self.publicKey = self.paddedText
+            self.publicKey = serialization.load_pem_public_key(
+                    self.cutRsaPad(self.paddedText, " RSA PUBLIC KEY-----"),
+            )
         else:
             with open("privateKey.key", "rb") as privateKeyFile:
-                self.privateKey = self.decryptRsaKey(privateKeyFile.read(), localPassword)
+                self.privateKey = serialization.load_pem_private_key(
+                    self.cutRsaPad(self.decryptRsaKey(privateKeyFile.read(), localPassword), " PRIVATE KEY-----"),
+                    password=None,
+                )
             with open("publicKey.key", "rb") as publicKeyFile:
-                self.publicKey = self.decryptRsaKey(publicKeyFile.read(), localPassword)
+                self.publicKey = serialization.load_pem_public_key(
+                    self.cutRsaPad(self.decryptRsaKey(publicKeyFile.read(), localPassword), " RSA PUBLIC KEY-----")
+                )
 
         privateKeyFile.close()
         publicKeyFile.close()
@@ -100,7 +121,10 @@ class SocketHandler:
             time.sleep(5)
 
     def initSession(self):
-        msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.decode("utf-8"))
+        msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.public_bytes(
+                crypto_serialization.Encoding.PEM,
+                crypto_serialization.PublicFormat.PKCS1
+            ))
         self.sendMessage(msg)
 
     def receive(self):
@@ -144,18 +168,33 @@ class SocketHandler:
     def saveKeyAndSend(self, message):
         if message.sender not in self.publicKeys:
             self.otherClients.append(message.sender)
-            self.publicKeys[message.sender] = message.content.encode("utf-8")
-            msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.decode("utf-8"),
-                          message.sender)
+            self.publicKeys[message.sender] = self.publicKey = serialization.load_pem_public_key(message.content)
+            msg = Message(self.socket.getsockname(), MessageType.SESSION, self.publicKey.public_bytes(
+                crypto_serialization.Encoding.PEM,
+                crypto_serialization.PublicFormat.PKCS1
+            ), message.sender)
             self.sendMessage(msg)
         else:
             self.sessionKeys[message.sender] = os.urandom(16)
-            msg = Message(self.socket.getsockname(), MessageType.KEY,
-                          self.sessionKeys[message.sender].decode("latin-1"), message.sender)
+            encSessionKey = self.privateKey.public_key().encrypt(self.sessionKeys[message.sender],
+                                                   padding.OAEP(
+                                                       mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                                                       algorithm=hashes.SHA256(),
+                                                       label=None
+                                                   ))
+            msg = Message(self.socket.getsockname(), MessageType.KEY, encSessionKey, message.sender)
             self.sendMessage(msg)
 
     def saveSessionKey(self, message):
-        self.sessionKeys[message.sender] = message.content.encode("latin-1")
+        decodedSessionKey = self.privateKey.decrypt(
+            message.content,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        self.sessionKeys[message.sender] = decodedSessionKey
 
     def saveToFile(self, message):
         messages = []
@@ -389,7 +428,17 @@ class SocketHandler:
         digest = hashes.Hash(hashes.SHA256())
         digest.update(password.encode("utf-8"))
         passwordHash = digest.finalize()[:128]
-        return self.decryptTextCBC(rsaKey, passwordHash, passwordHash[:16], False)
+        decryptedRsa = self.decryptTextCBC(rsaKey, passwordHash, passwordHash[:16], False)
+        return decryptedRsa
+
+    def cutRsaPad(self, rsaKeyPadded, keyword):
+        rsaKey = rsaKeyPadded.decode("Latin2")
+        rsaKey = rsaKey.split("-----BEGIN" + keyword)[1] if ("-----BEGIN" + keyword) in rsaKey else rsaKey
+        rsaKey = "-----BEGIN" + keyword + rsaKey
+        rsaKey = rsaKey.split("-----END" + keyword)[0] if ("-----END" + keyword) in rsaKey else rsaKey
+        rsaKey = rsaKey + "-----END" + keyword
+        rsaKey = rsaKey.encode("Latin2")
+        return rsaKey
 
     def findSessionKey(self, receiverStr):
         for e in self.otherClients:
