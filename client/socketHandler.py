@@ -38,10 +38,16 @@ class SocketHandler:
         self.publicKeys = {}
         self.otherClients = []
 
-        privateKeyFile = open("privateKey.key", "wb")
-        publicKeyFile = open("publicKey.key", "wb")
+        sizePrivateKey = 0
+        sizePublicKey = 0
+        self.paddedText = b''
+        if os.path.exists("privateKey.key") and os.path.exists("publicKey.key"):
+            sizePrivateKey = os.path.getsize("privateKey.key")
+            sizePublicKey = os.path.getsize("publicKey.key")
 
-        if os.path.getsize("privateKey.key") == 0 or os.path.getsize("publicKey.key") == 0:
+        if sizePrivateKey == 0 or sizePublicKey == 0:
+            privateKeyFile = open("privateKey.key", "wb")
+            publicKeyFile = open("publicKey.key", "wb")
             self.key = rsa.generate_private_key(
                 backend=crypto_default_backend(),
                 public_exponent=65537,
@@ -59,11 +65,15 @@ class SocketHandler:
                 crypto_serialization.PublicFormat.OpenSSH
             )
 
-            privateKeyFile.write(self.encryptText(localPassword, self.privateKey))
-            publicKeyFile.write(self.encryptText(localPassword, self.publicKey))
+            privateKeyFile.write(self.encryptRsaKey(self.privateKey, localPassword))
+            self.privateKey = self.paddedText
+            publicKeyFile.write(self.encryptRsaKey(self.publicKey, localPassword))
+            self.publicKey = self.paddedText
         else:
-            self.privateKey = self.decryptText(localPassword, privateKeyFile)
-            self.publicKey = self.decryptText(localPassword, publicKeyFile)
+            with open("privateKey.key", "rb") as privateKeyFile:
+                self.privateKey = self.decryptRsaKey(privateKeyFile.read(), localPassword)
+            with open("publicKey.key", "rb") as publicKeyFile:
+                self.publicKey = self.decryptRsaKey(publicKeyFile.read(), localPassword)
 
         privateKeyFile.close()
         publicKeyFile.close()
@@ -259,6 +269,7 @@ class SocketHandler:
         else:
             text = plaintext.encode("utf-8")
         padded_data, paddedBytes = self.pad(text, 16)
+        self.paddedText = padded_data
         ciphertext = encryptor.update(padded_data) + encryptor.finalize()
         ciphertext = iv + ciphertext
         return ciphertext, paddedBytes
@@ -354,6 +365,18 @@ class SocketHandler:
         decryptedPart = self.decryptTextOFB(encryptedPart, sessionkey, lastPart, False, paddedBytes)
         return decryptedPart, lastBlock
 
+    def encryptRsaKey(self, rsaKey, password):
+        digest = hashes.Hash(hashes.SHA256())
+        digest.update(password.encode("utf-8"))
+        passwordHash = digest.finalize()[:128]
+        return self.encryptTextCBC(rsaKey, passwordHash, passwordHash[:16])[0]
+
+    def decryptRsaKey(self, rsaKey, password):
+        digest = hashes.Hash(hashes.SHA256())
+        digest.update(password.encode("utf-8"))
+        passwordHash = digest.finalize()[:128]
+        return self.decryptTextCBC(rsaKey, passwordHash, passwordHash[:16], False)
+
     def findSessionKey(self, receiverStr):
         for e in self.otherClients:
             if str(e) == receiverStr:
@@ -368,4 +391,6 @@ class SocketHandler:
         return str, neededBytes
 
     def unpad(self, str, paddedBytes):
+        if paddedBytes == 0:
+            return str
         return str[:-paddedBytes]
